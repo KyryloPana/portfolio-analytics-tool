@@ -1,5 +1,6 @@
 from __future__ import annotations
-import argparse  # A standard Python library for turning terminal inputs into structured variables
+
+import argparse
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -28,6 +29,7 @@ from portfolio.report import (
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments."""
     p = argparse.ArgumentParser(
         description="Portfolio Analytics Tool: metrics, plots, benchmark comparison, and exports."
     )
@@ -45,16 +47,10 @@ def parse_args() -> argparse.Namespace:
         help="Benchmark ticker symbol (e.g., 'SPY')",
     )
     p.add_argument(
-        "--start",
-        type=str,
-        default="2022-01-01",
-        help="Start date YYYY-MM-DD",
+        "--start", type=str, default="2022-01-01", help="Start date YYYY-MM-DD"
     )
     p.add_argument(
-        "--end",
-        type=str,
-        default=None,
-        help="End date YYYY-MM-DD (optional)",
+        "--end", type=str, default=None, help="End date YYYY-MM-DD (optional)"
     )
     p.add_argument(
         "--cache-days",
@@ -62,12 +58,7 @@ def parse_args() -> argparse.Namespace:
         default=3,
         help="Re-download data if cached file is older than N days",
     )
-    p.add_argument(
-        "--outdir",
-        type=str,
-        default="output",
-        help="Output directory",
-    )
+    p.add_argument("--outdir", type=str, default="output", help="Output directory")
     p.add_argument(
         "--show-plots",
         action="store_true",
@@ -83,58 +74,58 @@ def main() -> None:
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     benchmark_symbol = args.benchmark.strip().upper()
 
-    # Ensure benchmark is included in tickers (useful for plotting/comparison)
+    if not tickers:
+        raise ValueError("No tickers provided. Use --tickers TICKER1,TICKER2,...")
+
     if benchmark_symbol not in tickers:
         tickers.append(benchmark_symbol)
 
     cfg = DataConfig(start=args.start, end=args.end, cache_days=args.cache_days)
 
-    # 2) Fetch prices -> returns
     prices = get_prices(tickers, cfg)
     rets_df = prices_to_returns(prices)
 
-    benchmark_prices = get_prices([benchmark_symbol], cfg)
-    benchmark_rets = prices_to_returns(benchmark_prices)[benchmark_symbol]
+    if benchmark_symbol not in rets_df.columns:
+        raise ValueError(
+            f"Benchmark '{benchmark_symbol}' not found in downloaded data."
+        )
 
-    # 3) Core metrics table (save + print)
+    benchmark_rets = rets_df[benchmark_symbol]
+
     core = pd.DataFrame(index=rets_df.columns)
     core["cagr"] = annualized_return(rets_df)
     core["vol"] = annualized_volatility(rets_df)
     core["sharpe"] = sharpe_ratio(rets_df)
     core["max_dd"] = max_drawdown(rets_df)
 
-    print("Core metrics:\n", core.round(4))
-
-    # 4) Benchmark-relative metrics (save + print)
     rel = benchmark_summary(rets_df, benchmark_rets)
+
+    print("Core metrics:\n", core.round(4))
     print("\nBenchmark-relative stats:\n", rel.round(4))
 
-    # 5) Output dirs + run tag
     dirs = ensure_output_dirs(args.outdir)
     tag = timestamp_tag()
 
     save_table(core.round(6), dirs["tables"] / f"core_metrics_{tag}.csv")
     save_table(rel.round(6), dirs["tables"] / f"benchmark_summary_{tag}.csv")
 
-    # 6) Save plots
     for col in rets_df.columns:
-        fig1 = plot_equity_curve(rets_df[col], title=f"{col} Equity Curve")
-        save_figure(fig1, dirs["figures"] / f"{col}_equity_{tag}.png")
-        plt.close(fig1)
+        fig = plot_equity_curve(rets_df[col], title=f"{col} Equity Curve")
+        save_figure(fig, dirs["figures"] / f"{col}_equity_{tag}.png")
+        plt.close(fig)
 
-        fig2 = plot_drawdowns(rets_df[col], title=f"{col} Drawdowns")
-        save_figure(fig2, dirs["figures"] / f"{col}_drawdowns_{tag}.png")
-        plt.close(fig2)
+        fig = plot_drawdowns(rets_df[col], title=f"{col} Drawdowns")
+        save_figure(fig, dirs["figures"] / f"{col}_drawdowns_{tag}.png")
+        plt.close(fig)
 
-        fig3 = plot_rolling_volatility(rets_df[col], title=f"{col} Rolling Volatility")
-        save_figure(fig3, dirs["figures"] / f"{col}_rolling_vol_{tag}.png")
-        plt.close(fig3)
+        fig = plot_rolling_volatility(rets_df[col], title=f"{col} Rolling Volatility")
+        save_figure(fig, dirs["figures"] / f"{col}_rolling_vol_{tag}.png")
+        plt.close(fig)
 
-        fig4 = plot_rolling_sharpe(rets_df[col], title=f"{col} Rolling Sharpe")
-        save_figure(fig4, dirs["figures"] / f"{col}_rolling_sharpe_{tag}.png")
-        plt.close(fig4)
+        fig = plot_rolling_sharpe(rets_df[col], title=f"{col} Rolling Sharpe")
+        save_figure(fig, dirs["figures"] / f"{col}_rolling_sharpe_{tag}.png")
+        plt.close(fig)
 
-    # 7) Write text report
     start = rets_df.index.min().date()
     end = rets_df.index.max().date()
 
@@ -151,7 +142,6 @@ def main() -> None:
     ]
     write_text_report(lines, dirs["base"] / f"report_{tag}.txt")
 
-    # Optional: show plots interactively (off by default for a tool)
     if args.show_plots:
         plt.show()
 

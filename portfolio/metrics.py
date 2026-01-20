@@ -1,68 +1,15 @@
-import numpy as np  # use NumPy for mathematical operations
-import pandas as pd  # use pandas because your data is a pd.Series (time series of returns).
+from __future__ import annotations
 
-TRADING_DAYS = 252  # assumed number of trading days
+import numpy as np
+import pandas as pd
 
-
-def cumulative_returns(
-    returns: pd.Series,
-) -> (
-    pd.Series
-):  # a time series showing how $1 grows over time if you keep compounding returns.
-    return (1 + returns).cumprod()
-    # “Cumulative product” multiplies growth factors over time
-
-
-def annualized_return(returns: pd.Series, periods=TRADING_DAYS) -> float:
-    # Convert the total compounded growth over the whole sample into a compounded annual growth rate (CAGR)
-    total_return = (1 + returns).prod()  # final value of the equity curve
-    years = len(returns) / periods
-    return total_return ** (1 / years) - 1
-
-
-def annualized_volatility(returns: pd.Series, periods=TRADING_DAYS) -> float:
-    # Convert daily volatility into annual volatility
-    return returns.std() * np.sqrt(periods)
-    # returns.std() is the standard deviation of returns per period (daily)
-    """Example:
-    daily std = 1% = 0.01
-    annual vol = 0.01 * sqrt(252) ≈ 0.158 → 15.8%  """
-
-
-def sharpe_ratio(
-    returns: pd.Series, risk_free_rate: float = 0.0, periods=TRADING_DAYS
-) -> float:
-    excess = (
-        returns - risk_free_rate / periods
-    )  # Excess returns (this subtracts the per-period risk-free rate from each return)
-    return (excess.mean() / excess.std()) * np.sqrt(periods)
-
-
-#!!!#If excess.std() is zero or extremely small, Sharpe can blow up or become infinite. In production you should handle that (later)
-
-
-def drawdown_series(
-    returns: pd.Series,
-) -> pd.Series:  # Compute drawdown at every point in time
-    # Drawdown = how far you are below the previous highest point (“peak”)
-    cum = cumulative_returns(returns)
-    peak = cum.cummax()
-    return (cum - peak) / peak
-
-
-def max_drawdown(returns: pd.Series) -> float:
-    return drawdown_series(returns).min()
-    """Example:
-    peak = 1.20, current cum = 1.08
-    drawdown = (1.08 - 1.20) / 1.20 = -0.10 → -10% """
-
-
-# Add benchmark functions
+TRADING_DAYS = 252
 
 
 def _to_dataframe(x: pd.Series | pd.DataFrame) -> pd.DataFrame:
+    """Normalize Series/DataFrame input to a DataFrame."""
     if isinstance(x, pd.Series):
-        return x.to_frame(name=x.name or "Strategy")
+        return x.to_frame(name=x.name or "strategy")
     return x
 
 
@@ -70,53 +17,104 @@ def align_returns(
     strategy: pd.Series | pd.DataFrame,
     benchmark: pd.Series,
 ) -> tuple[pd.DataFrame, pd.Series]:
-    # “Give me strategy returns (one or many) + benchmark returns; I will return both aligned on the exact same dates, with no missing values.”
+    """
+    Align strategy returns (one or many) with benchmark returns on common dates.
+
+    Returns:
+        (strategy_df, benchmark_series) with no missing values on the shared index.
+    """
     s = _to_dataframe(strategy).copy()
     b = benchmark.copy()
 
-    # align on common dates; drop any missing points
     joined = s.join(b.rename("benchmark"), how="inner").dropna()
-    b_aligned = joined["benchmark"]
-    s_aligned = joined.drop(columns=["benchmark"])
-    #!!!# .dropna() drops rows if any strategy column is missing. If you have multiple strategy columns and one of them has NaNs, you might lose a lot of data.
-    return s_aligned, b_aligned
+    return joined.drop(columns=["benchmark"]), joined["benchmark"]
+
+
+def cumulative_returns(returns: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
+    """Compound returns into an equity curve (growth of $1)."""
+    return (1 + returns).cumprod()
+
+
+def annualized_return(
+    returns: pd.Series | pd.DataFrame, periods: int = TRADING_DAYS
+) -> pd.Series:
+    """Compute CAGR (annualized geometric return)."""
+    r = _to_dataframe(returns)
+    total = (1 + r).prod()
+    years = len(r) / periods
+    return (total ** (1 / years) - 1).rename("cagr")
+
+
+def annualized_volatility(
+    returns: pd.Series | pd.DataFrame, periods: int = TRADING_DAYS
+) -> pd.Series:
+    """Compute annualized volatility from periodic returns."""
+    r = _to_dataframe(returns)
+    return (r.std() * np.sqrt(periods)).rename("vol")
+
+
+def sharpe_ratio(
+    returns: pd.Series | pd.DataFrame,
+    risk_free_rate: float = 0.0,
+    periods: int = TRADING_DAYS,
+) -> pd.Series:
+    """
+    Compute annualized Sharpe ratio.
+
+    Assumes:
+        - returns are arithmetic periodic returns
+        - risk_free_rate is annualized (e.g., 0.05 for 5%)
+    """
+    r = _to_dataframe(returns)
+    excess = r - (risk_free_rate / periods)
+
+    std = excess.std()
+    sr = (excess.mean() / std) * np.sqrt(periods)
+    sr = sr.replace([np.inf, -np.inf], np.nan)
+    return sr.rename("sharpe")
+
+
+def drawdown_series(returns: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
+    """Compute drawdown series from an equity curve."""
+    eq = cumulative_returns(returns)
+    peak = eq.cummax()
+    return (eq - peak) / peak
+
+
+def max_drawdown(returns: pd.Series | pd.DataFrame) -> pd.Series:
+    """Compute maximum drawdown (most negative drawdown)."""
+    dd = drawdown_series(returns)
+    ddf = _to_dataframe(dd)
+    return ddf.min().rename("max_dd")
 
 
 def beta(strategy: pd.Series | pd.DataFrame, benchmark: pd.Series) -> pd.Series:
+    """Compute CAPM beta vs benchmark using covariance/variance."""
     s, b = align_returns(strategy, benchmark)
     b_var = b.var()
-    if b_var == 0:
-        return pd.Series(
-            index=s.columns, data=np.nan
-        )  #!!!# also treat “almost zero” variance, or NaN variance:
-    betas = {}
-    for col in s.columns:
-        cov = s[col].cov(b)
-        betas[col] = cov / b_var
+    if not np.isfinite(b_var) or b_var == 0:
+        return pd.Series(index=s.columns, data=np.nan, name="beta")
+
+    betas = {col: s[col].cov(b) / b_var for col in s.columns}
     return pd.Series(betas, name="beta")
 
 
 def alpha_annualized(
-    # This function computes CAPM-style alpha, annualized, for: one strategy (pd.Series) or multiple strategies (pd.DataFrame) against one benchmark (pd.Series).
     strategy: pd.Series | pd.DataFrame,
     benchmark: pd.Series,
     periods: int = TRADING_DAYS,
 ) -> pd.Series:
-    # After accounting for market exposure (beta), how much extra return did the strategy produce?
-    # Alpha is the average return you get after removing what the market already explains.
     """
-    CAPM-style alpha using realized returns:
-    alpha_daily = mean(strategy - beta * benchmark)
-    alpha_annual = alpha_daily * periods
+    Compute realized CAPM-style alpha, annualized:
+
+        alpha_daily = mean(strategy - beta * benchmark)
+        alpha_annual = alpha_daily * periods
     """
     s, b = align_returns(strategy, benchmark)
     betas = beta(s, b)
-    alphas = {}
-    for col in s.columns:
-        alpha_daily = (s[col] - betas[col] * b).mean()
-        alphas[col] = alpha_daily * periods
+
+    alphas = {col: (s[col] - betas[col] * b).mean() * periods for col in s.columns}
     return pd.Series(alphas, name="alpha_annual")
-    #!!!# No risk-free rate; This is excess-return CAPM without Rf.
 
 
 def tracking_error_annualized(
@@ -124,16 +122,10 @@ def tracking_error_annualized(
     benchmark: pd.Series,
     periods: int = TRADING_DAYS,
 ) -> pd.Series:
-    # “How much does my strategy deviate from the benchmark?”; Not volatility of the strategy itself — volatility of the difference between strategy and benchmark.
+    """Annualized tracking error: std(strategy - benchmark) * sqrt(periods)."""
     s, b = align_returns(strategy, benchmark)
-    te = {}
-    for col in s.columns:
-        active = s[col] - b
-        te[col] = active.std() * np.sqrt(periods)
+    te = {col: (s[col] - b).std() * np.sqrt(periods) for col in s.columns}
     return pd.Series(te, name="tracking_error")
-
-
-# measures how tightly the strategy tracks the benchmark.
 
 
 def information_ratio(
@@ -141,41 +133,38 @@ def information_ratio(
     benchmark: pd.Series,
     periods: int = TRADING_DAYS,
 ) -> pd.Series:
-    # Information Ratio (IR) answers: “How much consistent outperformance do I get per unit of active risk?”
-    # It’s Sharpe ratio, but relative to a benchmark instead of cash.
+    """
+    Information ratio:
+
+        IR = (mean(strategy - benchmark) * periods) / tracking_error
+    """
     s, b = align_returns(strategy, benchmark)
+
     ir = {}
     for col in s.columns:
         active = s[col] - b
-        active_mean_annual = active.mean() * periods  # average outperformance per year
         te = active.std() * np.sqrt(periods)
-        ir[col] = (active_mean_annual / te) if te != 0 else np.nan
-        # numerator: “how much I beat the benchmark”; denominator: “how much I deviated from it”
+        ir[col] = (active.mean() * periods / te) if te and np.isfinite(te) else np.nan
+
     return pd.Series(ir, name="information_ratio")
 
 
-def correlation(
-    strategy: pd.Series | pd.DataFrame,
-    benchmark: pd.Series,
-) -> pd.Series:
+def correlation(strategy: pd.Series | pd.DataFrame, benchmark: pd.Series) -> pd.Series:
+    """Pearson correlation vs benchmark."""
     s, b = align_returns(strategy, benchmark)
-    cors = {col: s[col].corr(b) for col in s.columns}
-    # For each col in the strategy DataFrame: compute s[col].corr(b)
-    # pandas.Series.corr(...) computes Pearson correlation by default (linear correlation).
-    return pd.Series(cors, name="correlation")
+    return pd.Series({col: s[col].corr(b) for col in s.columns}, name="correlation")
 
 
 def benchmark_summary(
     strategy: pd.Series | pd.DataFrame,
     benchmark: pd.Series,
 ) -> pd.DataFrame:
-    """
-    Collect benchmark-relative stats into a single table.
-    """
+    """Collect benchmark-relative statistics into a single table."""
     s, b = align_returns(strategy, benchmark)
+
     out = pd.DataFrame(index=s.columns)
     out["beta"] = beta(s, b)
-    out["alphas_annual"] = alpha_annualized(s, b)
+    out["alpha_annual"] = alpha_annualized(s, b)
     out["tracking_error"] = tracking_error_annualized(s, b)
     out["information_ratio"] = information_ratio(s, b)
     out["correlation"] = correlation(s, b)
