@@ -13,3 +13,10 @@ portfolio/cache/
 
 # OS
 .DS_Store
+
+# Tooling
+.vscode/
+.ruff_cache/
+.ipynb_checkpoints/
+
+
