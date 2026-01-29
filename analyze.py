@@ -27,6 +27,8 @@ from portfolio.report import (
     write_text_report,
 )
 
+from portfolio.pyfolio_report import pyfolio_generate
+
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
@@ -65,13 +67,40 @@ def parse_args() -> argparse.Namespace:
         help="Display plots interactively (default: off)",
     )
 
+    p.add_argument(
+        "--pyfolio", action="store_true", help="Generate PyFolio report (optional)"
+    )
+    p.add_argument(
+        "--pyfolio-target",
+        type=str,
+        default=None,
+        help="Ticker/column to run PyFolio on (default: first non-benchmark ticker)",
+    )
+
+    p.add_argument(
+        "--pyfolio-out",
+        type=str,
+        default=None,
+        help="Path to save PyFolio HTML report (optional)",
+    )
+    p.add_argument(
+        "--tag",
+        type=str,
+        default=None,
+        help="Custom run tag used in output filenames (default: timestamp)",
+    )
+
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+    tickers = []
+    for t in args.tickers.split(","):
+        t = t.strip().upper()
+        tickers.append(t)
+
     benchmark_symbol = args.benchmark.strip().upper()
 
     if not tickers:
@@ -84,7 +113,6 @@ def main() -> None:
 
     prices = get_prices(tickers, cfg)
     rets_df = prices_to_returns(prices)
-
     if benchmark_symbol not in rets_df.columns:
         raise ValueError(
             f"Benchmark '{benchmark_symbol}' not found in downloaded data."
@@ -144,6 +172,40 @@ def main() -> None:
 
     if args.show_plots:
         plt.show()
+
+    if args.pyfolio:
+        candidates = []
+        """
+            the tool supports multi-ticker analysis (Data Frame of returns); 
+            PyFolio can generate a report only for one return series at a time (a pandas Series)
+            So here it is chosen a column from rets_df to be “the strategy” that PyFolio will analyze
+        """
+        for c in rets_df.columns:
+            if c != benchmark_symbol:
+                candidates.append(c)
+
+        if len(candidates) > 0:
+            if args.pyfolio_target is not None:
+                target = args.pyfolio_target.strip().upper()
+            else:
+                # chooses first non-benchmark ticker from the order user typed
+                target = tickers[0]
+        else:
+            target = benchmark_symbol
+
+        pyfolio_html = args.pyfolio_out
+        if pyfolio_html is None:
+            pyfolio_html = str(dirs["base"] / f"pyfolio_{target}_{tag}.html")
+
+        out_path = pyfolio_generate(
+            returns=rets_df[target],
+            benchmark_rets=benchmark_rets,
+            output_html=pyfolio_html,
+            title=f"PyFolio Tear Sheet — {target}",
+            tag=tag,
+            target=target,
+        )
+        print(f"PyFolio report saved: {out_path}")
 
 
 if __name__ == "__main__":
