@@ -1,4 +1,4 @@
-# Portfolio Analytics Tool — v0.1.0
+# Portfolio Analytics Tool — v0.1.1
 
 A Python-based command-line tool for analyzing portfolio and strategy performance using historical market data.  
 It computes core risk/return metrics, benchmark-relative statistics, rolling diagnostics, and exports reproducible reports.
@@ -7,7 +7,7 @@ This project is designed as a foundational analytics engine for quantitative res
 
 ---
 
-## 1. Key Features (v0.1.0)
+## 1. Key Features (v0.1.1)
 
 - **Deterministic market data ingestion**
   - Downloads historical prices from Yahoo Finance
@@ -39,8 +39,14 @@ This project is designed as a foundational analytics engine for quantitative res
   - Tables (CSV)
   - Text-based summary reports
 
+- **Optional PyFolio tear sheet export (v0.1.1)**
+  - Generates a PyFolio tear sheet for one selected return series
+  - Captures PyFolio Matplotlib figures and embeds them into an HTML report
+  - Output includes an HTML file + a companion folder with PNG figures
+
 - **CLI interface**
   - Flexible configuration for tickers, benchmark, dates, cache settings, and output paths
+  - Optional PyFolio flags (`--pyfolio`, `--pyfolio-out`)
 
 ---
 
@@ -48,15 +54,16 @@ This project is designed as a foundational analytics engine for quantitative res
 ```bash
 portfolio-analytics-tool/
 ├── portfolio/
-│ ├── init.py
-│ ├── data.py # Market data ingestion & caching
-│ ├── metrics.py # Performance & risk analytics
-│ ├── plots.py # Visualization utilities
-│ └── report.py # Export & reporting utilities
+│ ├── __init__.py
+│ ├── data.py                # Market data ingestion & caching
+│ ├── metrics.py             # Performance & risk analytics
+│ ├── plots.py               # Visualization utilities
+│ ├── report.py              # Export & reporting utilities
+│ └── pyfolio_report.py      # OPTIONAL: PyFolio tear sheet export
 ├── data/
 │ ├── sample_strategy.csv
 │ └── sample_benchmark.csv
-├── analyze.py # CLI entry point / orchestration layer
+├── analyze.py               # CLI entry point / orchestration layer
 ├── README.md
 ├── CHANGELOG.md
 ├── requirements.txt
@@ -65,7 +72,7 @@ portfolio-analytics-tool/
 
 **Design principles**
 
-- Clear separation of concerns  
+- Clear separation of concerns 
 - Each module has a single responsibility  
 - No hidden side effects  
 - Deterministic outputs given identical inputs  
@@ -98,7 +105,10 @@ source .venv/bin/activate      # macOS / Linux
 ```bash
 pip install -r requirements.txt
 ```
-
+4. (Optional) Install PyFolio add-on (v0.1.1):
+```bash
+pip install pyfolio-reloaded
+```
 ---
 
 ## 4. Quick Start
@@ -121,26 +131,44 @@ Output directory: output/
 **Example**
 ```bash
 python analyze.py \
-  --tickers AAPL,MSFT,SPY \
-  --benchmark SPY \
-  --start 2021-01-01 \
+  --tickers 'AAPL,MSFT,SPY' \
+  --benchmark 'SPY' \
+  --start '2018-01-01' \
   --cache-days 5 \
-  --outdir output \
+  --outdir 'output' \
   --show-plots
 ```
 
+**PyFolio tear sheet (v0.1.1)**
+```bash
+python analyze.py \
+  --tickers 'MSTR,NVDA,AAPL' \
+  --benchmark 'SPY' \
+  --start '2018-01-01' \
+  --pyfolio \
+  --pyfolio-target 'NVDA' \
+  --pyfolio-out 'output/pyfolio.html'
+
+
+
 **Available Arguments**
-| Argument       | Description                                    |
-|----------------|------------------------------------------------|
-| `--tickers`    | Comma-separated list of tickers to analyze     |
-| `--benchmark`  | Benchmark ticker symbol                        |
-| `--start`      | Start date (YYYY-MM-DD)                        |
-| `--end`        | End date (optional)                            |
-| `--cache-days` | Re-download data if cache is older than N days |
-| `--outdir`     | Output directory                               |
-| `--show-plots` | Display plots interactively                    |
+| Argument           | Description                                    |
+|--------------------|------------------------------------------------|
+| `--tickers`        | Comma-separated list of tickers to analyze     |
+| `--benchmark`      | Benchmark ticker symbol                        |
+| `--start`          | Start date (YYYY-MM-DD)                        |
+| `--end`            | End date (optional)                            |
+| `--cache-days`     | Re-download data if cache is older than N days |
+| `--outdir`         | Output directory                               |
+| `--show-plots`     | Display plots interactively                    |
+| `--pyfolio`        | Generate PyFolio tear sheet (optional add-on)  |
+| `--pyfolio-target` | Asset that is going to be analized by PyFolio  |
+| `--pyfolio-out`    | Output path for PyFolio HTML (file or folder)  |
+| `--tag`            | Custom tag for export file                     |
 
-
+```bash
+analyze.py [-h]  [--tickers TICKERS]  [--benchmark BENCHMARK]  [--start START]  [--end END]  [--cache-days CACHE_DAYS]  [--outdir OUTDIR]  [--show-plots]  [--pyfolio]  [--pyfolio-target PYFOLIO_TARGET]  [--pyfolio-out PYFOLIO_OUT] [--tag TAG]
+```
 ---
 
 ## 6. Outputs
@@ -163,6 +191,11 @@ A concise, human-readable summary including:
 - Core metrics  
 - Benchmark-relative metrics  
 
+### PyFolio Report (optional, v0.1.1)
+If --pyfolio is enabled:
+- An HTML tear sheet (path defined by --pyfolio-out)
+- A companion folder of PNGs next to the HTML (captured PyFolio figures)
+
 All outputs are deterministic and reproducible given the same inputs.
 
 ## 7. Methodology Notes
@@ -172,7 +205,12 @@ All outputs are deterministic and reproducible given the same inputs.
 - Annualization assumes 252 trading days per year.  
 - Alpha and beta use a realized CAPM-style formulation.  
 - Information ratio is undefined when tracking error is zero (e.g., benchmark compared with itself).  
-- Rolling metrics use a default 63-day (~3-month) window.  
+- Rolling metrics use a default 63-day (~3-month) window.
+
+### PyFolio notes (v0.1.1)
+- PyFolio generates a tear sheet for a single returns series (pd.Series).
+- When multi-ticker returns are provided, the tool selects one target series for PyFolio.
+- PyFolio is treated as an optional reporting utility; the core analytics pipeline remains independent.
 
 This tool prioritizes clarity, correctness, and reproducibility over predictive claims.
 
@@ -180,19 +218,26 @@ This tool prioritizes clarity, correctness, and reproducibility over predictive 
 
 ## 8. Roadmap
 
-### v0.1.1
-- Optional PyFolio integration for extended tear sheets  
-
-### v0.2.0
+### v0.2.0 — Portfolio & Strategy Abstraction
 - Explicit portfolio weights  
 - Multi-strategy comparison  
-- Support for user-provided return series  
+- Support for user-provided return series
+- Strategy-level PyFolio integration
 
-### v0.3.0
-- Regime-aware analytics  
+### v0.3.0 — Risk Scaling & Regime Awareness
+- Regime-conditioned analytics
+- Regime segmentation
 - Volatility targeting and risk scaling  
-- Expanded benchmark universe  
+- Expanded internal metrics (progressive removal of external dependencies such as PyFolio)  
+- Expanded benchmark universe 
 
+### v0.4.0 — Factor & Attribution Analysis
+- Factor regression framework
+- Performance attribution
+- Rolling factor exposure analysis
+- Attribution tables and charts
+
+> **Note:** PyFolio support is transitional and will be fully deprecated in future releases in favor of native, transparent analytics
 ---
 
 ## Disclaimer
