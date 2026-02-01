@@ -148,7 +148,7 @@ python analyze.py \
   --pyfolio \
   --pyfolio-target 'NVDA' \
   --pyfolio-out 'output/pyfolio.html'
-
+```
 
 
 **Available Arguments**
