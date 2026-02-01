@@ -130,24 +130,12 @@ Output directory: output/
 ## 5. CLI Usage
 **Example**
 ```bash
-python analyze.py \
-  --tickers 'AAPL,MSFT,SPY' \
-  --benchmark 'SPY' \
-  --start '2018-01-01' \
-  --cache-days 5 \
-  --outdir 'output' \
-  --show-plots
+python analyze.py  --tickers 'AAPL,MSFT,SPY'  --benchmark 'SPY'  --start '2018-01-01'  --cache-days 5  --outdir 'output'  --show-plots
 ```
 
 **PyFolio tear sheet (v0.1.1)**
 ```bash
-python analyze.py \
-  --tickers 'MSTR,NVDA,AAPL' \
-  --benchmark 'SPY' \
-  --start '2018-01-01' \
-  --pyfolio \
-  --pyfolio-target 'NVDA' \
-  --pyfolio-out 'output/pyfolio.html'
+python analyze.py  --tickers 'MSTR,NVDA,AAPL'  --benchmark 'SPY'  --start '2018-01-01'  --pyfolio  --pyfolio-target 'NVDA'  --pyfolio-out 'output/pyfolio.html'
 ```
 
 
