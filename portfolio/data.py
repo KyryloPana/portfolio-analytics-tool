@@ -72,7 +72,7 @@ def get_prices(tickers: list[str], cfg: DataConfig) -> pd.DataFrame:
         prices = data[["Close"]].copy()
         prices.columns = tickers
 
-    prices = prices.dropna(how="all")
+    prices = prices.dropna(how="all").sort_index()
 
     if cfg.cache_data:
         prices.to_csv(cache_path)
@@ -85,3 +85,13 @@ def prices_to_returns(prices: pd.DataFrame) -> pd.DataFrame:
     Convert price series to simple arithmetic returns (pct_change)
     """
     return prices.pct_change().dropna()
+
+def portfolio_return(prices: pd.DataFrame, weights: pd.Series | dict, V0: float = 1.0, start_date = None) -> pd.DataFrame:
+    if isinstance(weights, dict):
+        weights = pd.Series(weights)
+    P0 = prices.iloc[0]
+    shares = weights * V0 / P0
+    portfolio_value = prices.mul(shares, axis=1).sum(axis=1)
+    portfolio_return = portfolio_value.pct_change().drop(index=portfolio_value.index[0])
+    
+    return portfolio_return

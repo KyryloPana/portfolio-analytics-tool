@@ -5,7 +5,7 @@ import argparse
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from portfolio.data import DataConfig, get_prices, prices_to_returns
+from portfolio.data import DataConfig, get_prices, prices_to_returns, portfolio_return
 from portfolio.metrics import (
     annualized_return,
     annualized_volatility,
@@ -35,6 +35,31 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Portfolio Analytics Tool: metrics, plots, benchmark comparison, and exports."
     )
+    p.add_argument(
+        "--portfolio-tickers",
+        type=str,
+        required=True,
+        help="Comma-separated portfolio constituents used to construct the PORTFOLIO series "
+            "(e.g., 'AAPL,MSFT,SPY').",
+    )
+
+    p.add_argument(
+        "--portfolio-weights",
+        type=str,
+        default=None,
+        help="Comma-separated ticker=weight pairs for the portfolio constituents "
+            "(e.g., 'AAPL=0.5,MSFT=0.3,SPY=0.2'). "
+            "If omitted, uses equal weights across --portfolio-tickers. "
+            "Weights are normalized to sum to 1.",
+    )
+
+    p.add_argument(
+        "--V0",
+        type=float,
+        default=1.0,
+        help="Initial portfolio value (scale factor). Default: 1.0.",
+    )
+
 
     p.add_argument(
         "--tickers",
@@ -93,9 +118,59 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def parse__portfolio(portfolio_tickers: str, portfolio_weights: str | None):
+    args = parse_args()
+    
+    portfolio_tickers = []
+    for pt in args.portfolio_tickers.split(","):
+        pt = pt.strip().upper()
+        portfolio_tickers.append(pt)
+    
+    # check for duplicates
+    if len(set(portfolio_tickers)) != len(portfolio_tickers):
+        raise ValueError(f"Duplicate tickers in --portfolio-tickers: {portfolio_tickers}")
+
+    #make a dictionary with ticker and its weight
+    weights_by_ticker: dict[str, float] = {}
+    portfolio_weights = args.portfolio_weights
+    if portfolio_weights:
+        for item in portfolio_weights.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            k, v = item.split("=", 1)
+            k = k.strip().upper()
+            w = float(v.strip())
+            weights_by_ticker[k] = w
+        #validate tickers set and tickers for which weights are given 
+        unknown = set(weights_by_ticker) - set(portfolio_tickers)
+        if unknown:
+            raise ValueError(f"Weights given for unknown tickers: {sorted(unknown)}")
+        
+        missing = set(portfolio_tickers) - set(weights_by_ticker)
+        if missing:
+            raise ValueError(f"Missing weights for tickers: {sorted(missing)}")
+        
+        total = sum(weights_by_ticker[t] for t in portfolio_tickers)
+        if abs(total - 1.0) > 1e-5:
+            raise ValueError(f"Weights must sum to 1.0 (got {total})")
+        
+    else:
+        # equal weights
+        w = 1.0 / len(portfolio_tickers)
+        weights_by_ticker = {t: w for t in portfolio_tickers}
+
+    return portfolio_tickers, weights_by_ticker
+
+
+
 def main() -> None:
     args = parse_args()
-
+    cfg = DataConfig(start=args.start, end=args.end, cache_days=args.cache_days)
+    
+    
+    portfolio_tickers, weights_by_ticker = parse__portfolio(args.portfolio_tickers, args.portfolio_weights)
+        
     tickers = []
     for t in args.tickers.split(","):
         t = t.strip().upper()
@@ -109,7 +184,7 @@ def main() -> None:
     if benchmark_symbol not in tickers:
         tickers.append(benchmark_symbol)
 
-    cfg = DataConfig(start=args.start, end=args.end, cache_days=args.cache_days)
+    
 
     prices = get_prices(tickers, cfg)
     rets_df = prices_to_returns(prices)
@@ -120,6 +195,12 @@ def main() -> None:
 
     benchmark_rets = rets_df[benchmark_symbol]
 
+    portfolio_prices = get_prices(portfolio_tickers, cfg)
+    portfolio_returns = portfolio_return(portfolio_prices, weights_by_ticker, args.V0)
+    #rets_df = rets_df.join(portfolio_returns.rename("Portfolio"))
+    rets_df.insert(0, "Portfolio", portfolio_returns)
+
+    
     core = pd.DataFrame(index=rets_df.columns)
     core["cagr"] = annualized_return(rets_df)
     core["vol"] = annualized_volatility(rets_df)
@@ -186,7 +267,11 @@ def main() -> None:
 
         if len(candidates) > 0:
             if args.pyfolio_target is not None:
-                target = args.pyfolio_target.strip().upper()
+                target = args.pyfolio_target.strip()
+                if not 'Portfolio': target.upper()
+                
+            elif args.portfolio_tickers is not None:
+                target = 'Portfolio'
             else:
                 # chooses first non-benchmark ticker from the order user typed
                 target = tickers[0]
