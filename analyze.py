@@ -85,7 +85,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument(
         "--tickers",
         type=str,
-        default="AAPL,SPY",
+        default=None,
         help="Comma-separated tickers to analyze (e.g., 'AAPL,MSFT,SPY')",
     )
 
