@@ -26,8 +26,12 @@ def align_returns(
     s = _to_dataframe(strategy).copy()
     b = benchmark.copy()
 
-    joined = s.join(b.rename("benchmark"), how="inner").dropna()
-    return joined.drop(columns=["benchmark"]), joined["benchmark"]
+    if not isinstance(b, pd.Series):
+        raise TypeError(f"benchmark must be a pd.Series, got {type(b)}")
+    b.name = "Benchmark"  # set Series name (column name after join)
+
+    joined = s.join(b, how="inner").dropna()
+    return joined.drop(columns=["Benchmark"]), joined["Benchmark"]
 
 
 def cumulative_returns(returns: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
@@ -59,7 +63,7 @@ def sharpe_ratio(
     periods: int = TRADING_DAYS,
 ) -> pd.Series:
     """
-    Compute annualized Sharpe ratio.
+    Compute annualized Sharpe ratio
 
     Assumes:
         - returns are arithmetic periodic returns
@@ -75,14 +79,14 @@ def sharpe_ratio(
 
 
 def drawdown_series(returns: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
-    """Compute drawdown series from an equity curve."""
+    """Compute drawdown series from an equity curve"""
     eq = cumulative_returns(returns)
     peak = eq.cummax()
     return (eq - peak) / peak
 
 
 def max_drawdown(returns: pd.Series | pd.DataFrame) -> pd.Series:
-    """Compute maximum drawdown (most negative drawdown)."""
+    """Compute maximum drawdown (most negative drawdown)"""
     dd = drawdown_series(returns)
     ddf = _to_dataframe(dd)
     return ddf.min().rename("max_dd")
@@ -159,7 +163,7 @@ def benchmark_summary(
     strategy: pd.Series | pd.DataFrame,
     benchmark: pd.Series,
 ) -> pd.DataFrame:
-    """Collect benchmark-relative statistics into a single table."""
+    """Collect benchmark-relative statistics into a single table"""
     s, b = align_returns(strategy, benchmark)
 
     out = pd.DataFrame(index=s.columns)

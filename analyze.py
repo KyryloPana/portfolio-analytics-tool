@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import math
+import sys
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from portfolio.data import DataConfig, get_prices, prices_to_returns, portfolio_return
+from portfolio.data import (
+    DataConfig,
+    get_prices,
+    prices_to_returns,
+    portfolio_return,
+    load_series_from_csv,
+)
 from portfolio.metrics import (
     annualized_return,
     annualized_volatility,
@@ -30,36 +38,49 @@ from portfolio.report import (
 from portfolio.pyfolio_report import pyfolio_generate
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments."""
+def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Portfolio Analytics Tool: metrics, plots, benchmark comparison, and exports."
     )
-    p.add_argument(
+    src_portfolio = p.add_mutually_exclusive_group(required=True)
+    src_benchmark = p.add_mutually_exclusive_group(required=True)
+
+    src_portfolio.add_argument(
         "--portfolio-tickers",
         type=str,
-        required=True,
-        help="Comma-separated portfolio constituents used to construct the PORTFOLIO series "
-            "(e.g., 'AAPL,MSFT,SPY').",
+        help="Comma-separated tickers used to construct PORTFOLIO (e.g., 'AAPL,MSFT,SPY').",
     )
 
+    src_portfolio.add_argument(
+        "--portfolio-csv",
+        type=str,
+        help="Path to CSV file containing a precomputed portfolio series (returns or prices).",
+    )
+
+    # only meaningful in CSV mode
+    p.add_argument(
+        "--portfolio-csv-format",
+        type=str,
+        choices=["returns", "prices"],
+        default="returns",
+        help="CSV content type: 'returns' (default) or 'prices'. Used only with --portfolio-csv.",
+    )
+
+    # only meaningful in tickers mode
     p.add_argument(
         "--portfolio-weights",
         type=str,
         default=None,
-        help="Comma-separated ticker=weight pairs for the portfolio constituents "
-            "(e.g., 'AAPL=0.5,MSFT=0.3,SPY=0.2'). "
-            "If omitted, uses equal weights across --portfolio-tickers. "
-            "Weights are normalized to sum to 1.",
+        help="Comma-separated ticker=weight pairs (e.g., 'AAPL=0.5,MSFT=0.3,SPY=0.2'). "
+        "If omitted, equal weights are used.",
     )
 
     p.add_argument(
-        "--V0",
+        "--v0",
         type=float,
         default=1.0,
         help="Initial portfolio value (scale factor). Default: 1.0.",
     )
-
 
     p.add_argument(
         "--tickers",
@@ -67,12 +88,30 @@ def parse_args() -> argparse.Namespace:
         default="AAPL,SPY",
         help="Comma-separated tickers to analyze (e.g., 'AAPL,MSFT,SPY')",
     )
-    p.add_argument(
-        "--benchmark",
+
+    src_benchmark.add_argument(
+        "--benchmark-ticker",
         type=str,
-        default="SPY",
+        default=None,
         help="Benchmark ticker symbol (e.g., 'SPY')",
     )
+
+    src_benchmark.add_argument(
+        "--benchmark-csv",
+        type=str,
+        default=None,
+        help="Path to CSV file containing a precomputed benchmark series (returns or prices).",
+    )
+
+    # only meaningful in CSV mode
+    p.add_argument(
+        "--benchmark-csv-format",
+        type=str,
+        choices=["returns", "prices"],
+        default="returns",
+        help="CSV content type: 'returns' (default) or 'prices'. Used only with --benchmark-csv.",
+    )
+
     p.add_argument(
         "--start", type=str, default="2022-01-01", help="Start date YYYY-MM-DD"
     )
@@ -115,99 +154,189 @@ def parse_args() -> argparse.Namespace:
         help="Custom run tag used in output filenames (default: timestamp)",
     )
 
-    return p.parse_args()
+    args = p.parse_args(argv)
+    # Cross-argument validation
+    if args.portfolio_csv and args.portfolio_weights:
+        p.error(
+            "--portfolio-weights can only be used with --portfolio-tickers (not with --portfolio-csv)"
+        )
+
+    if args.portfolio_csv is None and args.portfolio_csv_format != "returns":
+        # if passing --portfolio-csv-format without --portfolio-csv
+        p.error("--portfolio-csv-format is only valid when using --portfolio-csv")
+
+    if args.benchmark_csv and args.benchmark_ticker:
+        p.error("you can either use --benchmark-ticker or --benchmark-csv")
+
+    if args.benchmark_csv is None and args.benchmark_csv_format != "returns":
+        # if passing --portfolio-csv-format without --portfolio-csv
+        p.error("--benchmark-csv-format is only valid when using --benchmark-csv")
+
+    return args
 
 
-def parse__portfolio(portfolio_tickers: str, portfolio_weights: str | None):
-    args = parse_args()
-    
-    portfolio_tickers = []
-    for pt in args.portfolio_tickers.split(","):
+def parse_portfolio(portfolio_tickers: str, portfolio_weights: str | None):
+    """
+    Supports:
+        --portfolio-tickers "SPY,TLT"
+        --portfolio-weights "SPY=0.6,TLT=0.4"   # keyed
+        --portfolio-weights "0.6,0.4"           # positional
+        --portfolio-weights omitted             # equal weights
+    """
+
+    portfolio_tickers_list = []
+    for pt in portfolio_tickers.split(","):
         pt = pt.strip().upper()
-        portfolio_tickers.append(pt)
-    
-    # check for duplicates
-    if len(set(portfolio_tickers)) != len(portfolio_tickers):
-        raise ValueError(f"Duplicate tickers in --portfolio-tickers: {portfolio_tickers}")
+        if not pt:
+            continue
+        portfolio_tickers_list.append(pt)
 
-    #make a dictionary with ticker and its weight
+    # check for duplicates
+    if len(set(portfolio_tickers_list)) != len(portfolio_tickers_list):
+        raise ValueError(
+            f"Duplicate tickers in --portfolio-tickers: {portfolio_tickers_list}"
+        )
+
+    # make a dictionary with ticker and its weight
     weights_by_ticker: dict[str, float] = {}
-    portfolio_weights = args.portfolio_weights
     if portfolio_weights:
+        items = []
         for item in portfolio_weights.split(","):
             item = item.strip()
             if not item:
                 continue
-            k, v = item.split("=", 1)
-            k = k.strip().upper()
-            w = float(v.strip())
-            weights_by_ticker[k] = w
-        #validate tickers set and tickers for which weights are given 
-        unknown = set(weights_by_ticker) - set(portfolio_tickers)
-        if unknown:
-            raise ValueError(f"Weights given for unknown tickers: {sorted(unknown)}")
-        
-        missing = set(portfolio_tickers) - set(weights_by_ticker)
-        if missing:
-            raise ValueError(f"Missing weights for tickers: {sorted(missing)}")
-        
-        total = sum(weights_by_ticker[t] for t in portfolio_tickers)
+            items.append(item)
+        if not items:
+            raise ValueError(
+                "Portfolio weights were provided but contained no usable items."
+            )
+
+        if any("=" in it for it in items):
+            if any("=" not in it for it in items):
+                raise ValueError(
+                    "Mixed weight formats are not allowed. Use either "
+                    "'TICKER=weight' for all items or plain numbers only."
+                )
+            for item in items:
+                k, v = item.split("=", 1)
+                k = k.strip().upper()
+                if not k:
+                    raise ValueError(f"Invalid weight key in item: {item!r}")
+
+                if k in weights_by_ticker:
+                    raise ValueError(f"Duplicate weight specified for ticker: {k}")
+
+                try:
+                    w = float(v.strip())
+                except ValueError as e:
+                    raise ValueError(f"Invalid weight value for {k}: {v!r}") from e
+
+                if not math.isfinite(w):
+                    raise ValueError(f"Weight for {k} must be finite (got {w}).")
+                if w < 0:
+                    raise ValueError(f"Weight for {k} must be non-negative (got {w})")
+
+                weights_by_ticker[k] = w
+
+            # validate tickers set and tickers for which weights are given
+            unknown = set(weights_by_ticker) - set(portfolio_tickers_list)
+            if unknown:
+                raise ValueError(
+                    f"Weights given for unknown tickers: {sorted(unknown)}"
+                )
+
+            missing = set(portfolio_tickers_list) - set(weights_by_ticker)
+            if missing:
+                raise ValueError(f"Missing weights for tickers: {sorted(missing)}")
+
+        else:
+            if len(items) != len(portfolio_tickers_list):
+                raise ValueError(
+                    f"Number of weights ({len(items)}) must match number of tickers "
+                    f"({len(portfolio_tickers_list)}) when using plain numeric weights."
+                )
+
+            for t, w_str in zip(portfolio_tickers_list, items):
+                try:
+                    w = float(w_str)
+                except ValueError as e:
+                    raise ValueError(f"Invalid weight value for {t}: {w_str!r}") from e
+
+                if not math.isfinite(w):
+                    raise ValueError(f"Weight for {t} must be finite (got {w}).")
+                if w < 0:
+                    raise ValueError(f"Weight for {t} must be non-negative (got {w}).")
+
+                weights_by_ticker[t] = float(w)
+
+        total = sum(weights_by_ticker[t] for t in portfolio_tickers_list)
         if abs(total - 1.0) > 1e-5:
             raise ValueError(f"Weights must sum to 1.0 (got {total})")
-        
     else:
         # equal weights
-        w = 1.0 / len(portfolio_tickers)
-        weights_by_ticker = {t: w for t in portfolio_tickers}
+        w = 1.0 / len(portfolio_tickers_list)
+        weights_by_ticker = {t: w for t in portfolio_tickers_list}
 
-    return portfolio_tickers, weights_by_ticker
-
+    return portfolio_tickers_list, weights_by_ticker
 
 
 def main() -> None:
     args = parse_args()
     cfg = DataConfig(start=args.start, end=args.end, cache_days=args.cache_days)
-    
-    
-    portfolio_tickers, weights_by_ticker = parse__portfolio(args.portfolio_tickers, args.portfolio_weights)
-        
-    tickers = []
-    for t in args.tickers.split(","):
-        t = t.strip().upper()
-        tickers.append(t)
 
-    benchmark_symbol = args.benchmark.strip().upper()
+    if args.portfolio_csv is not None:
+        portfolio_returns = load_series_from_csv(
+            args.portfolio_csv.strip(),
+            fmt=args.portfolio_csv_format.strip().lower(),
+            series_name="Portfolio",
+        ).dropna()
 
-    if not tickers:
-        raise ValueError("No tickers provided. Use --tickers TICKER1,TICKER2,...")
-
-    if benchmark_symbol not in tickers:
-        tickers.append(benchmark_symbol)
-
-    
-
-    prices = get_prices(tickers, cfg)
-    rets_df = prices_to_returns(prices)
-    if benchmark_symbol not in rets_df.columns:
-        raise ValueError(
-            f"Benchmark '{benchmark_symbol}' not found in downloaded data."
+    elif args.portfolio_tickers is not None:
+        portfolio_tickers, weights_by_ticker = parse_portfolio(
+            args.portfolio_tickers, args.portfolio_weights
         )
+        portfolio_prices = get_prices(portfolio_tickers, cfg)
+        portfolio_returns = portfolio_return(
+            portfolio_prices, weights_by_ticker, args.v0
+        ).dropna()
+        portfolio_returns.name = "Portfolio"
 
-    benchmark_rets = rets_df[benchmark_symbol]
+    if args.benchmark_csv is not None:
+        benchmark_rets = load_series_from_csv(
+            args.benchmark_csv.strip(),
+            fmt=args.benchmark_csv_format.strip().lower(),
+            series_name="Benchmark",
+        ).dropna()
+        benchmark_symbol = "Benchmark"
 
-    portfolio_prices = get_prices(portfolio_tickers, cfg)
-    portfolio_returns = portfolio_return(portfolio_prices, weights_by_ticker, args.V0)
-    #rets_df = rets_df.join(portfolio_returns.rename("Portfolio"))
-    rets_df.insert(0, "Portfolio", portfolio_returns)
+    elif args.benchmark_ticker is not None:
+        b = (args.benchmark_ticker or "SPY").strip().upper()
+        benchmark_rets = prices_to_returns(get_prices([b], cfg))[b].dropna()
+        benchmark_rets.name = "Benchmark"
+        benchmark_symbol = b
 
-    
+    if args.tickers is not None:
+        tickers = []
+        for t in args.tickers.split(","):
+            tickers.append(t.strip().upper())
+        prices = get_prices(tickers, cfg)
+        tickers_rets = prices_to_returns(prices)
+        rets_df = pd.concat(
+            [portfolio_returns, tickers_rets, benchmark_rets], axis=1, join="outer"
+        ).sort_index()
+    else:
+        rets_df = pd.concat(
+            [portfolio_returns, benchmark_rets], axis=1, join="outer"
+        ).sort_index()
+
     core = pd.DataFrame(index=rets_df.columns)
     core["cagr"] = annualized_return(rets_df)
     core["vol"] = annualized_volatility(rets_df)
     core["sharpe"] = sharpe_ratio(rets_df)
     core["max_dd"] = max_drawdown(rets_df)
 
-    rel = benchmark_summary(rets_df, benchmark_rets)
+    strategy_df = rets_df.drop(columns=[benchmark_rets.name], errors="ignore")
+    rel = benchmark_summary(strategy_df, benchmark_rets)
 
     print("Core metrics:\n", core.round(4))
     print("\nBenchmark-relative stats:\n", rel.round(4))
@@ -268,10 +397,11 @@ def main() -> None:
         if len(candidates) > 0:
             if args.pyfolio_target is not None:
                 target = args.pyfolio_target.strip()
-                if not 'Portfolio': target.upper()
-                
+                if not "Portfolio":
+                    target.upper()
+
             elif args.portfolio_tickers is not None:
-                target = 'Portfolio'
+                target = "Portfolio"
             else:
                 # chooses first non-benchmark ticker from the order user typed
                 target = tickers[0]
@@ -294,4 +424,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise SystemExit(2)
+    except Exception:
+        raise  # real bug, show traceback

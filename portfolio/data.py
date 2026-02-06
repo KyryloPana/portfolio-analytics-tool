@@ -80,18 +80,79 @@ def get_prices(tickers: list[str], cfg: DataConfig) -> pd.DataFrame:
     return prices
 
 
-def prices_to_returns(prices: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convert price series to simple arithmetic returns (pct_change)
-    """
-    return prices.pct_change().dropna()
-
-def portfolio_return(prices: pd.DataFrame, weights: pd.Series | dict, V0: float = 1.0, start_date = None) -> pd.DataFrame:
+def portfolio_return(
+    prices: pd.DataFrame, weights: pd.Series | dict, V0: float = 1.0, start_date=None
+) -> pd.Series:
     if isinstance(weights, dict):
         weights = pd.Series(weights)
     P0 = prices.iloc[0]
     shares = weights * V0 / P0
     portfolio_value = prices.mul(shares, axis=1).sum(axis=1)
     portfolio_return = portfolio_value.pct_change().drop(index=portfolio_value.index[0])
-    
+    portfolio_return.name = "Portfolio"
     return portfolio_return
+
+
+def load_series_from_csv(
+    path: Path | str, fmt: str, series_name: str = "SERIES"
+) -> pd.Series:
+    """
+    Load a portfolio series from a CSV
+
+    Expected CSV:
+        - Either a single column of values with a date index column
+        - Or multiple columns (e.g., tickers) where it will be attempted to locate a 'Portfolio' column
+
+    Returns:
+        pd.Series of returns indexed by datetime
+    """
+    p = Path(path).expanduser().resolve()
+    print(f"DEBUG csv resolved path = {p}")
+
+    if not p.exists():
+        raise FileNotFoundError(f"CSV file not found at path: {p}")
+
+    try:
+        df = pd.read_csv(p)
+    except pd.errors.EmptyDataError as e:
+        raise ValueError(f"CSV file is empty: {p}") from e
+    except Exception as e:
+        raise RuntimeError(f"Failed to load CSV from path: {p}") from e
+
+    # Set datetime index if date column exists
+    dt_col = None
+    for c in ("date", "Date", "datetime", "Datetime", "time", "Time"):
+        if c in df.columns:
+            dt_col = c
+            break
+    if dt_col is not None:
+        df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce")
+        df = df.dropna(subset=[dt_col]).set_index(dt_col)
+
+    # Pick one value column
+    if series_name in df.columns:
+        s = df[series_name]
+    else:
+        value_cols = list(df.columns)
+        if len(value_cols) != 1:
+            raise ValueError(
+                f"CSV must contain '{series_name}' or exactly 1 value column. Found: {value_cols}"
+            )
+        s = df[value_cols[0]]
+
+    s = pd.to_numeric(s, errors="coerce").dropna().sort_index()
+
+    if fmt == "prices":
+        s = s.pct_change().dropna()
+    elif fmt != "returns":
+        raise ValueError("fmt must be 'returns' or 'prices'")
+
+    s.name = series_name
+    return s
+
+
+def prices_to_returns(prices: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert price series to simple arithmetic returns (pct_change)
+    """
+    return prices.pct_change().dropna()
